@@ -39,7 +39,7 @@ npm run example:limiter
 npm run example:http
 ```
 
-**`example:limiter` output:**
+**`npm run example:limiter` output:**
 ```
 ConcurrencyLimiter demo
   tasks: 8  |  maxConcurrent: 3  |  each task: 500ms
@@ -48,12 +48,46 @@ ConcurrencyLimiter demo
   [task 2] started  | active: 2 | queued: 0
   [task 3] started  | active: 3 | queued: 0
   [task 1] finished
-  [task 4] started  | active: 3 | queued: 0
-  ...
+  [task 4] started  | active: 3 | queued: 4
+  [task 2] finished
+  [task 5] started  | active: 3 | queued: 3
+  [task 3] finished
+  [task 6] started  | active: 3 | queued: 2
+  [task 4] finished
+  [task 7] started  | active: 3 | queued: 1
+  [task 5] finished
+  [task 8] started  | active: 3 | queued: 0
+  [task 6] finished
+  [task 7] finished
+  [task 8] finished
 
-All done in 1504ms
+All done in 1529ms
+Results: result-1, result-2, result-3, result-4, result-5, result-6, result-7, result-8
+
 Expected ~1500ms (3 batches × 500ms)
 Without limiter it would be ~500ms (all parallel)
+```
+
+**`npm run example:http` output:**
+```
+HttpRequestLimiter demo
+  requests: 6  |  maxConcurrentRequests: 2
+
+  [post 1] enqueued | active: 0 | queued: 0
+  [post 2] enqueued | active: 1 | queued: 0
+  [post 3] enqueued | active: 2 | queued: 0
+  [post 4] enqueued | active: 2 | queued: 1
+  [post 5] enqueued | active: 2 | queued: 2
+  [post 6] enqueued | active: 2 | queued: 3
+  [post 1] done     | "sunt aut facere repellat provident occae..."
+  [post 2] done     | "qui est esse..."
+  [post 4] done     | "eum et est occaecati..."
+  [post 5] done     | "nesciunt quas odio..."
+  [post 3] done     | "ea molestias quasi exercitationem repell..."
+  [post 6] done     | "dolorem eum magni eos aperiam quia..."
+
+Fetched 6 posts in 711ms
+Max concurrent requests was capped at 2
 ```
 
 ---
