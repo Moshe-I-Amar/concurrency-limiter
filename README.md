@@ -27,6 +27,37 @@ npm install
 | `npm run test:watch` | Run tests in watch mode |
 | `npm run test:coverage` | Run tests and print coverage report |
 
+## Examples
+
+After cloning and running `npm install`, you can see the limiter in action:
+
+```bash
+# Watch 8 tasks run in batches of 3
+npm run example:limiter
+
+# Fetch 6 API posts with max 2 requests at a time (requires internet)
+npm run example:http
+```
+
+**`example:limiter` output:**
+```
+ConcurrencyLimiter demo
+  tasks: 8  |  maxConcurrent: 3  |  each task: 500ms
+
+  [task 1] started  | active: 1 | queued: 0
+  [task 2] started  | active: 2 | queued: 0
+  [task 3] started  | active: 3 | queued: 0
+  [task 1] finished
+  [task 4] started  | active: 3 | queued: 0
+  ...
+
+All done in 1504ms
+Expected ~1500ms (3 batches × 500ms)
+Without limiter it would be ~500ms (all parallel)
+```
+
+---
+
 ## Usage
 
 ### ConcurrencyLimiter
