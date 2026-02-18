@@ -1,41 +1,83 @@
 # concurrency-limiter
 
-A production-grade TypeScript library for controlling the maximum number of async tasks or HTTP requests running simultaneously. Built with strict TypeScript, zero dependencies, and 100% test coverage.
+A production-grade TypeScript library that controls how many async tasks or HTTP requests run simultaneously. Excess work is queued automatically and starts the moment a slot frees up — no polling, no timers, no external dependencies.
+
+**42 tests · 100% coverage · strict TypeScript · zero dependencies**
+
+---
+
+## Table of Contents
+
+- [When to use this](#when-to-use-this)
+- [How it works](#how-it-works)
+- [Getting started](#getting-started)
+- [Examples](#examples)
+- [Usage](#usage)
+  - [ConcurrencyLimiter](#concurrencylimiter)
+  - [HttpRequestLimiter](#httprequestlimiter)
+  - [Header merging](#header-merging)
+- [API reference](#api-reference)
+- [Project structure](#project-structure)
+- [Test coverage](#test-coverage)
+- [Requirements audit](#requirements-audit)
+- [Design notes](#design-notes)
+
+---
+
+## When to use this
+
+| Scenario | Without limiter | With limiter |
+|---|---|---|
+| Fetch 500 URLs at once | 500 simultaneous connections, likely rate-limited or OOM | Max N in-flight, rest queue automatically |
+| Batch DB writes | All fire at once, connection pool exhausted | Controlled throughput |
+| Parallel API calls | Hit rate limits, get 429s | Stay within API's concurrency budget |
+| Any `Promise.all` that feels dangerous | Unbounded parallelism | Hard ceiling you control |
+
+---
 
 ## How it works
 
-When you enqueue more tasks than the configured limit, excess tasks are held in a FIFO queue and started automatically as running slots free up — no polling, no timers, just Promise chaining.
-
 ```
-enqueue(task) → slot free? → run immediately
-                            → no slot? → queue → wait for a slot to free → run
+enqueue(task) ──► slot free? ──► YES ──► run immediately
+                      │
+                      NO
+                      │
+                      ▼
+                   queue (FIFO)
+                      │
+                  task finishes (success or error)
+                      │
+                      ▼
+                  next task starts
 ```
 
-## Installation
+The scheduler runs at full capacity whenever work is available. The moment any task finishes — whether it resolved or rejected — the next queued task claims its slot automatically.
+
+---
+
+## Getting started
 
 ```bash
+git clone https://github.com/Moshe-I-Amar/concurrency-limiter.git
+cd concurrency-limiter
 npm install
+
+npm test                  # run the test suite
+npm run test:coverage     # tests + coverage report
+npm run build             # compile TypeScript → dist/
 ```
 
-## Commands
-
-| Command | Description |
-|---|---|
-| `npm run build` | Compile TypeScript to `dist/` |
-| `npm run build:watch` | Compile in watch mode |
-| `npm test` | Run the test suite |
-| `npm run test:watch` | Run tests in watch mode |
-| `npm run test:coverage` | Run tests and print coverage report |
+---
 
 ## Examples
 
-After cloning and running `npm install`, you can see the limiter in action:
+See the limiter in action with two runnable demos:
 
 ```bash
-# Watch 8 tasks run in batches of 3
+# 8 local tasks, maxConcurrent=3 — no internet needed
 npm run example:limiter
 
-# Fetch 6 API posts with max 2 requests at a time (requires internet)
+# 6 real HTTP requests, maxConcurrentRequests=2 — requires internet
 npm run example:http
 ```
 
@@ -68,6 +110,8 @@ Expected ~1500ms (3 batches × 500ms)
 Without limiter it would be ~500ms (all parallel)
 ```
 
+> Notice: `active` never exceeds 3. The moment one task finishes, the next starts.
+
 **`npm run example:http` output:**
 ```
 HttpRequestLimiter demo
@@ -90,31 +134,34 @@ Fetched 6 posts in 711ms
 Max concurrent requests was capped at 2
 ```
 
+> Notice: once 2 slots are full, new requests queue immediately. Responses arrive out of order (network timing), but all 6 complete.
+
 ---
 
 ## Usage
 
 ### ConcurrencyLimiter
 
-Limit how many async tasks run at once — works with any `() => Promise<T>`.
+Works with **any** `() => Promise<T>` — HTTP, database queries, file I/O, CPU-bound work, anything async.
 
 ```typescript
 import { ConcurrencyLimiter } from './src/index';
 
 const limiter = new ConcurrencyLimiter({ maxConcurrent: 3 });
 
-// Enqueue 10 tasks — only 3 run at a time, the rest queue automatically
+// 10 tasks enqueued — only 3 run at a time, rest queue automatically
 const results = await Promise.all(
-  urls.map(url => limiter.enqueue(() => fetch(url).then(r => r.json())))
+  items.map(item => limiter.enqueue(() => processItem(item)))
 );
 
-// Inspect runtime state
-const { activeCount, queueLength } = limiter.stats;
+// Inspect live state at any point
+const { activeCount, queueLength, maxConcurrent } = limiter.stats;
+console.log(`${activeCount} running, ${queueLength} waiting`);
 ```
 
 ### HttpRequestLimiter
 
-A thin wrapper around `fetch` that applies concurrency limiting to outbound HTTP requests. Supports default headers merged with per-request headers.
+A thin wrapper around `fetch` with a built-in concurrency limit and default header support.
 
 ```typescript
 import { HttpRequestLimiter } from './src/index';
@@ -129,30 +176,41 @@ const api = new HttpRequestLimiter({
   },
 });
 
-// At most 5 requests fly simultaneously
+// At most 5 requests in-flight simultaneously
 const responses = await Promise.all(
   userIds.map(id => api.request(`https://api.example.com/users/${id}`))
 );
 
-// Per-request headers are merged on top of defaultInit headers
+// Per-request options work exactly like fetch — headers are merged, not replaced
 const response = await api.request('https://api.example.com/items', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json' }, // merged, not replaced
+  headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ name: 'widget' }),
 });
+
+if (!response.ok) {
+  throw new Error(`HTTP ${response.status}`);
+}
 ```
 
 ### Header merging
 
-`defaultInit.headers` and per-request `headers` are merged key-by-key. Per-request values win on conflicts; unrelated default headers are preserved.
+Default headers and per-request headers are merged **key-by-key**. Per-request values win on conflicts; unrelated defaults are always preserved.
 
 ```typescript
 // defaultInit.headers:  { Authorization: 'Bearer token', Accept: 'application/json' }
-// per-request headers:  { 'Content-Type': 'application/json' }
-// merged result:        { Authorization: 'Bearer token', Accept: 'application/json', 'Content-Type': 'application/json' }
+// per-request headers:  { Accept: 'text/csv', 'X-Request-Id': '123' }
+// ─────────────────────────────────────────────────────────────────────
+// merged result:        { Authorization: 'Bearer token',   ← preserved
+//                         Accept: 'text/csv',               ← overridden
+//                         'X-Request-Id': '123' }           ← added
 ```
 
-## API
+A plain `{ ...defaultInit, ...init }` spread would silently drop all default headers whenever a request supplies any headers. The key-by-key merge prevents that.
+
+---
+
+## API reference
 
 ### `ConcurrencyLimiter`
 
@@ -160,12 +218,12 @@ const response = await api.request('https://api.example.com/items', {
 new ConcurrencyLimiter(options: ConcurrencyLimiterOptions)
 ```
 
-| Member | Type | Description |
-|---|---|---|
-| `enqueue(task)` | `(task: AsyncTask<T>) => Promise<T>` | Submit a task; returns a Promise that settles when the task completes |
-| `stats` | `LimiterStats` | Read-only snapshot: `maxConcurrent`, `activeCount`, `queueLength` |
-
 Throws `RangeError` if `maxConcurrent` is not a positive integer ≥ 1.
+
+| Member | Signature | Description |
+|---|---|---|
+| `enqueue(task)` | `<T>(task: AsyncTask<T>) => Promise<T>` | Submit any async task. Returns a Promise that settles identically to the task. |
+| `stats` | `LimiterStats` | Read-only snapshot of `maxConcurrent`, `activeCount`, `queueLength`. Each access returns a new object. |
 
 ### `HttpRequestLimiter`
 
@@ -173,39 +231,106 @@ Throws `RangeError` if `maxConcurrent` is not a positive integer ≥ 1.
 new HttpRequestLimiter(options: HttpRequestOptions)
 ```
 
-| Member | Type | Description |
+Throws `RangeError` if `maxConcurrentRequests` is not a positive integer ≥ 1.
+
+| Member | Signature | Description |
 |---|---|---|
-| `request(input, init?)` | `Promise<Response>` | Enqueue a fetch call; same signature as `fetch` |
-| `stats` | `LimiterStats` | Delegates to the underlying `ConcurrencyLimiter` |
-| `limiter` | `ConcurrencyLimiter` | Access the underlying limiter directly |
+| `request(input, init?)` | `(input: string \| URL \| Request, init?: RequestInit) => Promise<Response>` | Enqueue a fetch call. Propagates network errors; HTTP 4xx/5xx do not throw — check `response.ok`. |
+| `stats` | `LimiterStats` | Delegates to the underlying `ConcurrencyLimiter`. |
+| `limiter` | `ConcurrencyLimiter` | Exposes the underlying limiter for advanced use (e.g. mixing HTTP and non-HTTP tasks on the same slot budget). |
+
+### Types
+
+```typescript
+type AsyncTask<T> = () => Promise<T>;
+
+interface ConcurrencyLimiterOptions {
+  maxConcurrent: number;      // positive integer ≥ 1
+}
+
+interface HttpRequestOptions {
+  maxConcurrentRequests: number;   // positive integer ≥ 1
+  defaultInit?: RequestInit;       // applied to every request
+}
+
+interface LimiterStats {
+  readonly maxConcurrent: number;
+  readonly activeCount: number;
+  readonly queueLength: number;
+}
+```
+
+---
 
 ## Project structure
 
 ```
 src/
-  types.ts                  — shared TypeScript interfaces and type aliases
-  concurrency-limiter.ts    — core scheduler (#drain / #run slot recycling)
-  http-request-limiter.ts   — fetch wrapper with init merging
+  types.ts                  — all shared TypeScript interfaces and type aliases
+  concurrency-limiter.ts    — core scheduler: FIFO queue, #drain / #run slot recycling
+  http-request-limiter.ts   — fetch wrapper with header merging, delegates scheduling
   index.ts                  — public barrel export
 tests/
-  concurrency-limiter.test.ts       — 28 tests (ceiling, FIFO, slot recycling, errors, stats)
-  http-request-limiter.test.ts      — 14 tests (fetch mocking, header merging, concurrency)
+  concurrency-limiter.test.ts   — 28 tests: ceiling, FIFO, slot recycling, errors, stats, types
+  http-request-limiter.test.ts  — 14 tests: fetch mocking, header merging, concurrency
   helpers/
-    controlled-task.ts      — makeControlledTask<T>: deterministic async test utility
+    controlled-task.ts          — makeControlledTask<T>: deterministic async test utility
+examples/
+  demo-concurrency-limiter.ts   — runnable local demo (npm run example:limiter)
+  demo-http-limiter.ts          — runnable HTTP demo (npm run example:http)
 ```
+
+---
 
 ## Test coverage
 
 ```
 File                     | % Stmts | % Branch | % Funcs | % Lines
 -------------------------|---------|----------|---------|--------
+All files                |   100   |   100    |   100   |   100
 concurrency-limiter.ts   |   100   |   100    |   100   |   100
 http-request-limiter.ts  |   100   |   100    |   100   |   100
 index.ts                 |   100   |   100    |   100   |   100
 ```
 
+Run `npm run test:coverage` to reproduce.
+
+---
+
+## Requirements audit
+
+Audited against 5 production requirements:
+
+| # | Requirement | Status | Evidence |
+|---|---|---|---|
+| R1 | Unlimited outgoing HTTP requests can be enqueued | ✅ PASS | `#queue` is an unbounded `Array` — no size cap (`concurrency-limiter.ts:92`) |
+| R2 | Concurrent requests capped at a configurable maximum | ✅ PASS | `while (activeCount < maxConcurrent)` in `#drain` (`concurrency-limiter.ts:205`); value set at construction |
+| R3 | Next queued request starts immediately on completion (success or error) | ✅ PASS | `.finally(() => { activeCount--; #drain() })` fires on both paths (`concurrency-limiter.ts:240-245`) |
+| R4 | Requests processed in FIFO order | ✅ PASS | `Array.push` on enqueue + `Array.shift` on drain = strict FIFO; proven by test *"processes tasks in enqueue order with maxConcurrent=1"* |
+| R5 | Generic type-safe wrapper for any async operation | ✅ PASS | `enqueue<T>(task: AsyncTask<T>): Promise<T>` — no HTTP coupling in core; `HttpRequestLimiter` is an optional domain adapter |
+
+**Verdict: all 5 requirements satisfied.**
+
+---
+
+## Commands
+
+| Command | Description |
+|---|---|
+| `npm run build` | Compile TypeScript to `dist/` |
+| `npm run build:watch` | Compile in watch mode |
+| `npm test` | Run the test suite |
+| `npm run test:watch` | Run tests in watch mode |
+| `npm run test:coverage` | Run tests and print coverage report |
+| `npm run example:limiter` | Run the local concurrency demo |
+| `npm run example:http` | Run the HTTP request demo |
+
+---
+
 ## Design notes
 
-- **No `async/await` in the scheduler hot path** — `#run` uses raw `.then/.catch/.finally` to avoid the extra microtask and implicit Promise allocation that `async` functions introduce.
-- **`QueueItem<unknown>` internally, `enqueue<T>` externally** — the queue is heterogeneous; type safety is preserved through the `resolve`/`reject` closures captured inside each `new Promise<T>`.
-- **Slot recycling** — `#drain` is called both on `enqueue` (to claim a free slot immediately) and in `.finally` (to recycle the slot the moment a task completes), keeping the limiter at full capacity whenever work is available.
+- **No `async/await` in the scheduler hot path** — `#run` uses raw `.then/.catch/.finally` to avoid the extra microtask and implicit Promise allocation that `async` functions introduce. This matters at high task throughput.
+- **`QueueItem<unknown>` internally, `enqueue<T>` externally** — the queue is heterogeneous (each task can have a different `T`). Type safety is preserved through the `resolve`/`reject` closures captured inside each `new Promise<T>` at the enqueue boundary.
+- **Single slot-release site** — `#activeCount` is only ever decremented in `.finally`, making it impossible for a slot to leak regardless of task outcome.
+- **Slot recycling** — `#drain` is called in two places: on `enqueue` (to claim a free slot immediately if one exists) and in `.finally` (to recycle the slot the moment a task finishes). This keeps the limiter running at full capacity with no gaps.
+- **Delegation over inheritance** — `HttpRequestLimiter` holds a `ConcurrencyLimiter` instance and delegates all scheduling to it. Zero queue logic is duplicated.
